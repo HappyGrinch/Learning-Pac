@@ -7,131 +7,141 @@ class PacManAgent:
     def __init__(self, start_pos, cell_size, generation=1):
         """
         start_pos: Tuple (row, col) – Startposition im Grid.
-        cell_size: Pixelgröße einer Zelle (wird für die Darstellung benötigt).
-        generation: Die Generation des Pac-Man (startet bei 1).
+        cell_size: Pixelgröße einer Zelle.
+        generation: Startgeneration (standardmäßig 1).
         """
         self.pos = start_pos
         self.cell_size = cell_size
         self.generation = generation
-        
-        self.movement_history = []
+
         self.start_time = time.time()
         self.last_food_time = self.start_time
         self.alive = True
         self.survival_time = 0.0
-        self.prev_pos = start_pos  # Speichert das Feld vor der letzten Bewegung
 
-        
-        # Initiale Gewichtung für Bewegungen: Gleichmäßig auf 0.25 für jede Richtung
-        self.move_weights = {
-            (0, 1): 0.25,   # Rechts
-            (0, -1): 0.25,  # Links
-            (1, 0): 0.25,   # Unten
-            (-1, 0): 0.25   # Oben
-        }
-        # Zur Verlangsamung der Bewegung
+        # Q-Tabelle: Zustand (Position) -> { Aktion: Q-Wert }
+        # Wir verwenden als Zustand einfach die Position (row, col).
+        self.Q = {}
+        self.actions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+        self._initialize_state(self.pos)
+
+        # Parameter für Q-Learning
+        self.epsilon = 0.1    # Explorationsrate (epsilon-greedy)
+        self.alpha = 0.5      # Lernrate
+        self.gamma = 0.9      # Diskontfaktor
+
         self.last_move_time = self.start_time
-        self.move_delay = 0.4  # alle 0,4 Sekunden Bewegung
+        self.move_delay = 0.4  # Zeit zwischen Bewegungen (in Sekunden)
 
-    def get_intelligence(self):
-        """
-        Berechnet eine Intelligenz-Skala basierend auf dem Unterschied zwischen
-        dem höchsten move_weight und dem Basiswert 0.25.
-        Initial ergibt das (0.25-0.25)*100 = 0.
-        """
-        max_weight = max(self.move_weights.values())
-        intelligence = round((max_weight - 0.25) * 100)
-        return intelligence
-    
-    def mutate(self, mutation_rate=0.05, mutation_strength=0.1):
-        """
-        Führt eine Mutation der Bewegungsgewichte durch.
-        - mutation_rate: Wahrscheinlichkeit, dass ein Gewicht mutiert.
-        - mutation_strength: Maximale prozentuale Veränderung (z. B. ±10%).
-        """
-        import random
-        for move in self.move_weights:
-            if random.random() < mutation_rate:
-                # Ändere das Gewicht zufällig um bis zu ±mutation_strength
-                factor = 1 + random.uniform(-mutation_strength, mutation_strength)
-                self.move_weights[move] *= factor
-        # Normalisiere die Gewichte, sodass ihre Summe 1 ergibt
-        total = sum(self.move_weights.values())
-        for move in self.move_weights:
-            self.move_weights[move] /= total
+        self.prev_state = None
+        self.prev_action = None
 
+        self.prev_pos = start_pos  # Verhindert direkten Rückweg
+
+    def _initialize_state(self, state):
+        if state not in self.Q:
+            self.Q[state] = {action: 0.0 for action in self.actions}
+
+    def get_action(self, state):
+        self._initialize_state(state)
+        # Epsilon-greedy Auswahl:
+        if random.random() < self.epsilon:
+            possible_actions = list(self.Q[state].keys())
+            # Vermeide den unmittelbaren Rückweg, falls möglich:
+            if self.prev_pos is not None:
+                filtered = [a for a in possible_actions if (state[0] + a[0], state[1] + a[1]) != self.prev_pos]
+                if filtered:
+                    possible_actions = filtered
+            return random.choice(possible_actions)
+        else:
+            max_q = max(self.Q[state].values())
+            best_actions = [a for a, q in self.Q[state].items() if q == max_q]
+            if self.prev_pos is not None:
+                filtered = [a for a in best_actions if (state[0] + a[0], state[1] + a[1]) != self.prev_pos]
+                if filtered:
+                    best_actions = filtered
+            return random.choice(best_actions)
 
     def update(self, grid, obstacles, food_positions, speed_factor=1):
         current_time = time.time()
         self.survival_time = current_time - self.start_time
 
-        # Lebensdauer in echten Sekunden: 20 Sekunden (unabhängig vom speed_factor)
+        # Tod, wenn 20 echte Sekunden ohne Nahrung vergangen sind:
         if current_time - self.last_food_time >= 20:
             self.alive = False
 
-        # Bewegung wird beschleunigt: move_delay wird durch speed_factor geteilt
+        # Bewegung erfolgt beschleunigt über den speed_factor:
         if current_time - self.last_move_time >= self.move_delay / speed_factor:
             self.last_move_time = current_time
-            move = self.decide_move()
-            self.movement_history.append(move)
-            self.move(move)
+            state = self.pos
+            action = self.get_action(state)
+            self.prev_state = state
+            self.prev_action = action
+            self.prev_pos = self.pos
+            self.move(action)
 
-        # Nahrung prüfen (kein Anpassungsfaktor hier, da es real gemessen wird)
+        # Nahrung prüfen:
         if self.pos in food_positions:
             self.last_food_time = current_time
 
-        # Kollisionen mit Hindernissen:
+        # Kollision mit Hindernissen:
         if self.pos in obstacles:
             self.alive = False
 
-
-    def decide_move(self):
-            # Berechne alle möglichen Bewegungen
-            possible_moves = list(self.move_weights.keys())
-            # Filtere, dass die Bewegung nicht zum Feld führt, von dem wir gerade gekommen sind,
-            # falls andere Optionen vorhanden sind.
-            if self.prev_pos is not None:
-                filtered_moves = []
-                for move in possible_moves:
-                    new_row = self.pos[0] + move[0]
-                    new_col = self.pos[1] + move[1]
-                    if (new_row, new_col) != self.prev_pos:
-                        filtered_moves.append(move)
-                if filtered_moves:
-                    # Wähle aus den gefilterten Bewegungen, gewichtet nach move_weights
-                    weights = [self.move_weights[m] for m in filtered_moves]
-                    return random.choices(filtered_moves, weights=weights, k=1)[0]
-            # Falls kein Filter möglich, wähle normal:
-            weights = list(self.move_weights.values())
-            return random.choices(possible_moves, weights=weights, k=1)[0]
-
-
-    def move(self, move):
+    def move(self, action):
         row, col = self.pos
-        d_row, d_col = move
-        new_row = row + d_row
-        new_col = col + d_col
+        d_row, d_col = action
+        new_state = (row + d_row, col + d_col)
         from settings import GRID_ROWS, GRID_COLS
-        if not (0 <= new_row < GRID_ROWS and 0 <= new_col < GRID_COLS):
+        if not (0 <= new_state[0] < GRID_ROWS and 0 <= new_state[1] < GRID_COLS):
             self.alive = False
         else:
-            self.prev_pos = self.pos  # Speichere aktuelles Feld als vorheriges
-            self.pos = (new_row, new_col)
+            self._initialize_state(new_state)
+            self.pos = new_state
+
+    def learn(self, reward, new_state):
+        self._initialize_state(new_state)
+        old_q = self.Q[self.prev_state][self.prev_action]
+        max_next = max(self.Q[new_state].values())
+        self.Q[self.prev_state][self.prev_action] = old_q + self.alpha * (reward + self.gamma * max_next - old_q)
+
+    def compute_intelligence(self, record_survival):
+        """
+        Berechnet einen Intelligenzwert, der ausdrückt, wie gut der Agent im Vergleich zu seinen
+        vorherigen Generationen ist. Dazu werden zwei Faktoren kombiniert:
+          - Überlebensfaktor: (eigene Überlebenszeit / record_survival)
+          - Lernfaktor: max(Q[state]) im aktuellen Zustand (sofern > 0; sonst 0)
+        Falls record_survival 0 ist, wird der Überlebensfaktor als 1 angenommen.
+        Beide Faktoren werden gleich gewichtet und mit 100 skaliert.
+        """
+        if record_survival > 0:
+            survival_factor = self.survival_time / record_survival
+        else:
+            survival_factor = 1
+        self._initialize_state(self.pos)
+        learning_factor = max(0, max(self.Q[self.pos].values()))
+        # Kombiniere beide Faktoren (0.5 * survival + 0.5 * learning), skaliere mit 100:
+        intelligence = (0.5 * survival_factor + 0.5 * learning_factor) * 100
+        return intelligence
+
+    def get_intelligence(self):
+        """
+        Standardvariante ohne Vergleich zu einer vorherigen Generation.
+        Hier geben wir einfach den maximalen Q-Wert im aktuellen Zustand (multipliziert mit 100) zurück.
+        Für eine sinnvolle Bewertung im Kontext des Lernens über Generationen sollte compute_intelligence(record_survival)
+        verwendet werden.
+        """
+        self._initialize_state(self.pos)
+        max_q = max(self.Q[self.pos].values())
+        return round(max_q * 100)
 
     def draw(self, screen, grid):
-        """
-        Zeichnet den Pac-Man als blauen Kreis, 
-        bei dem ein weißer Keil als Mund ausgespart ist.
-        Außerdem wird ein kleines weißes Auge gezeichnet.
-        """
         cell_rect = grid[self.pos]["rect"]
         center = cell_rect.center
         radius = cell_rect.width // 2
-
-        # Körper (blauer Kreis)
+        # Zeichne den Körper als blauen Kreis
         pygame.draw.circle(screen, (0, 0, 255), center, radius)
-
-        # Mund (weißer Keil von -30° bis +30°)
+        # Zeichne den Mund als weißen Keil (Bogen von -30° bis +30°)
         start_angle = -math.pi / 6
         end_angle = math.pi / 6
         step = (end_angle - start_angle) / 12
@@ -143,8 +153,7 @@ class PacManAgent:
             mouth_points.append((x, y))
             angle += step
         pygame.draw.polygon(screen, (255, 255, 255), mouth_points)
-
-        # Auge (weißer Punkt) etwas nach oben
+        # Zeichne das Auge als kleinen weißen Kreis, etwas höher platziert
         eye_offset_x = int(radius * 0.2)
         eye_offset_y = int(-0.6 * radius)
         eye_center = (center[0] + eye_offset_x, center[1] + eye_offset_y)
@@ -152,28 +161,26 @@ class PacManAgent:
         pygame.draw.circle(screen, (255, 255, 255), eye_center, eye_radius)
 
     def reinforce(self, reward):
-        """
-        Einfaches Lernschema: Erhöhe die Gewichtung aller Moves 
-        proportional zum reward und normalisiere.
-        """
-        if not self.movement_history:
-            return
-        for move in self.movement_history:
-            self.move_weights[move] += reward / len(self.movement_history)
-        total = sum(self.move_weights.values())
-        for move in self.move_weights:
-            self.move_weights[move] /= total
+        if self.prev_state is not None and self.prev_action is not None:
+            self.learn(reward, self.pos)
+
+    def mutate(self, mutation_rate=0.05, mutation_strength=0.1):
+        for state in self.Q:
+            for action in self.Q[state]:
+                if random.random() < mutation_rate:
+                    factor = 1 + random.uniform(-mutation_strength, mutation_strength)
+                    self.Q[state][action] *= factor
+            total = sum(self.Q[state].values())
+            if total != 0:
+                for action in self.Q[state]:
+                    self.Q[state][action] /= total
 
     def reset(self, new_start):
-        """
-        Setzt den Pac-Man an eine neue Startposition, 
-        behält seine gelernten move_weights und erhöht NICHT automatisch die Generation.
-        (Das erfolgt in main.py, wenn Pac-Man stirbt.)
-        """
         self.pos = new_start
         self.start_time = time.time()
         self.last_food_time = self.start_time
         self.alive = True
         self.survival_time = 0.0
-        self.movement_history = []
+        self.prev_state = None
+        self.prev_action = None
         self.last_move_time = self.start_time
